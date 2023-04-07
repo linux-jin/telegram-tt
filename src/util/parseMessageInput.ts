@@ -1,12 +1,14 @@
 import type { ApiMessageEntity, ApiFormattedText } from '../api/types';
 import { ApiMessageEntityTypes } from '../api/types';
 import { RE_LINK_TEMPLATE } from '../config';
+import { IS_EMOJI_SUPPORTED } from './windowEnvironment';
 
-const ENTITY_CLASS_BY_NODE_NAME: Record<string, ApiMessageEntityTypes> = {
+export const ENTITY_CLASS_BY_NODE_NAME: Record<string, ApiMessageEntityTypes> = {
   B: ApiMessageEntityTypes.Bold,
   STRONG: ApiMessageEntityTypes.Bold,
   I: ApiMessageEntityTypes.Italic,
   EM: ApiMessageEntityTypes.Italic,
+  INS: ApiMessageEntityTypes.Underline,
   U: ApiMessageEntityTypes.Underline,
   S: ApiMessageEntityTypes.Strike,
   STRIKE: ApiMessageEntityTypes.Strike,
@@ -18,16 +20,21 @@ const ENTITY_CLASS_BY_NODE_NAME: Record<string, ApiMessageEntityTypes> = {
 
 const MAX_TAG_DEEPNESS = 3;
 
-export default function parseMessageInput(html: string, withMarkdownLinks = false): ApiFormattedText {
+export default function parseMessageInput(
+  html: string, withMarkdownLinks = false, skipMarkdown = false,
+): ApiFormattedText {
   const fragment = document.createElement('div');
-  fragment.innerHTML = withMarkdownLinks ? parseMarkdown(parseMarkdownLinks(html)) : parseMarkdown(html);
+  fragment.innerHTML = skipMarkdown ? html
+    : withMarkdownLinks ? parseMarkdown(parseMarkdownLinks(html)) : parseMarkdown(html);
   fixImageContent(fragment);
   const text = fragment.innerText.trim().replace(/\u200b+/g, '');
-  let textIndex = 0;
+  const trimShift = fragment.innerText.indexOf(text[0]);
+  let textIndex = -trimShift;
   let recursionDeepness = 0;
   const entities: ApiMessageEntity[] = [];
 
   function addEntity(node: ChildNode) {
+    if (node.nodeType === Node.COMMENT_NODE) return;
     const { index, entity } = getEntityDataFromNode(node, text, textIndex);
 
     if (entity) {
@@ -58,7 +65,7 @@ export default function parseMessageInput(html: string, withMarkdownLinks = fals
   };
 }
 
-function fixImageContent(fragment: HTMLDivElement) {
+export function fixImageContent(fragment: HTMLDivElement) {
   fragment.querySelectorAll('img').forEach((node) => {
     if (node.dataset.documentId) { // Custom Emoji
       node.textContent = (node as HTMLImageElement).alt || '';
@@ -96,9 +103,13 @@ function parseMarkdown(html: string) {
   );
 
   // Custom Emoji markdown tag
+  if (!IS_EMOJI_SUPPORTED) {
+    // Prepare alt text for custom emoji
+    parsedHtml = parsedHtml.replace(/\[<img[^>]+alt="([^"]+)"[^>]*>]/gm, '[$1]');
+  }
   parsedHtml = parsedHtml.replace(
-    /(^|\s)(?!<(?:code|pre)[^<]*|<\/)\[([^\]\n]+)\]\(customEmoji:(\d+)\)(?![^<]*<\/(?:code|pre)>)(\s|$)/g,
-    '$1<img alt="$2" data-document-id="$3">$4',
+    /(?!<(?:code|pre)[^<]*|<\/)\[([^\]\n]+)\]\(customEmoji:(\d+)\)(?![^<]*<\/(?:code|pre)>)/g,
+    '<img alt="$1" data-document-id="$2">',
   );
 
   // Other simple markdown
@@ -208,6 +219,10 @@ function getEntityDataFromNode(
 }
 
 function getEntityTypeFromNode(node: ChildNode): ApiMessageEntityTypes | undefined {
+  if (node instanceof HTMLElement && node.dataset.entityType) {
+    return node.dataset.entityType as ApiMessageEntityTypes;
+  }
+
   if (ENTITY_CLASS_BY_NODE_NAME[node.nodeName]) {
     return ENTITY_CLASS_BY_NODE_NAME[node.nodeName];
   }

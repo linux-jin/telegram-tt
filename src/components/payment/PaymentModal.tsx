@@ -4,13 +4,13 @@ import React, {
 } from '../../lib/teact/teact';
 import { getActions, withGlobal } from '../../global';
 
-import type { GlobalState } from '../../global/types';
+import type { TabState } from '../../global/types';
 import type { ApiChat, ApiCountry, ApiPaymentCredentials } from '../../api/types';
 import type { Price, ShippingOption } from '../../types';
 import type { FormState } from '../../hooks/reducers/usePaymentReducer';
 
 import { PaymentStep } from '../../types';
-import { selectChat } from '../../global/selectors';
+import { selectChat, selectTabState } from '../../global/selectors';
 import { formatCurrency } from '../../util/formatCurrency';
 import buildClassName from '../../util/buildClassName';
 import { detectCardTypeText } from '../common/helpers/detectCardType';
@@ -39,7 +39,7 @@ const SUPPORTED_PROVIDERS = new Set([DEFAULT_PROVIDER, DONATE_PROVIDER]);
 
 export type OwnProps = {
   isOpen?: boolean;
-  onClose: () => void;
+  onClose: NoneToVoidFunction;
 };
 
 type StateProps = {
@@ -64,9 +64,10 @@ type StateProps = {
   stripeId?: string;
   savedCredentials?: ApiPaymentCredentials[];
   passwordValidUntil?: number;
+  isExtendedMedia?: boolean;
 };
 
-type GlobalStateProps = Pick<GlobalState['payment'], (
+type GlobalStateProps = Pick<TabState['payment'], (
   'step' | 'shippingOptions' |
   'savedInfo' | 'canSaveCredentials' | 'nativeProvider' | 'passwordMissing' | 'invoice' | 'error'
 )>;
@@ -105,6 +106,7 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
   stripeId,
   savedCredentials,
   passwordValidUntil,
+  isExtendedMedia,
 }) => {
   const {
     loadPasswordInfo,
@@ -137,6 +139,13 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
       openModal();
     }
   }, [isOpen, loadPasswordInfo, openModal]);
+
+  // Modal window can be closed by an event from the server side
+  useEffect(() => {
+    if (!isOpen && isModalOpen) {
+      closeModal();
+    }
+  }, [closeModal, isModalOpen, isOpen]);
 
   useEffect(() => {
     if (step !== undefined || error) {
@@ -214,6 +223,10 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
     setStep(PaymentStep.PaymentInfo);
   }, [setStep]);
 
+  const handleClearPaymentError = useCallback(() => {
+    clearPaymentError();
+  }, [clearPaymentError]);
+
   function renderError() {
     if (!error) {
       return undefined;
@@ -226,12 +239,14 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
       >
         <h4>{error.description || 'Error'}</h4>
         <p>{error.description || 'Error'}</p>
-        <Button
-          isText
-          onClick={clearPaymentError}
-        >
-          {lang('OK')}
-        </Button>
+        <div className="dialog-buttons mt-2">
+          <Button
+            isText
+            onClick={handleClearPaymentError}
+          >
+            {lang('OK')}
+          </Button>
+        </div>
       </Modal>
     );
   }
@@ -314,6 +329,8 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
         return (
           <ConfirmPayment
             url={confirmPaymentUrl!}
+            noRedirect={isExtendedMedia}
+            onClose={closeModal}
           />
         );
       default:
@@ -469,8 +486,27 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
     ? lang('Checkout.PayPrice', formatCurrency(totalPrice, currency!, lang.code))
     : lang('Next');
 
-  const isSubmitDisabled = isLoading
-    || Boolean(step === PaymentStep.Checkout && invoice?.isRecurring && !isTosAccepted);
+  function getIsSubmitDisabled() {
+    if (isLoading) {
+      return true;
+    }
+
+    switch (step) {
+      case PaymentStep.Checkout:
+        return Boolean(invoice?.isRecurring && !isTosAccepted);
+
+      case PaymentStep.PaymentInfo:
+        return Boolean(
+          paymentState.cardNumber === ''
+          || (needCardholderName && paymentState.cardholder === '')
+          || paymentState.cvv === ''
+          || paymentState.expiry === '',
+        );
+
+      default:
+        return false;
+    }
+  }
 
   if (isProviderError) {
     return (
@@ -481,18 +517,22 @@ const PaymentModal: FC<OwnProps & StateProps & GlobalStateProps> = ({
         onCloseAnimationEnd={handleModalClose}
       >
         <p>
-          Sorry, Telegram WebZ doesn&apos;t support payments with this provider yet. <br />
+          Sorry, Telegram Web A doesn&apos;t support payments with this provider yet. <br />
           Please use one of our mobile apps to do this.
         </p>
-        <Button
-          isText
-          onClick={closeModal}
-        >
-          {lang('OK')}
-        </Button>
+        <div className="dialog-buttons mt-2">
+          <Button
+            isText
+            onClick={closeModal}
+          >
+            {lang('OK')}
+          </Button>
+        </div>
       </Modal>
     );
   }
+
+  const isSubmitDisabled = getIsSubmitDisabled();
 
   return (
     <Modal
@@ -562,7 +602,8 @@ export default memo(withGlobal<OwnProps>(
       smartGlocalCredentials,
       savedCredentials,
       temporaryPassword,
-    } = global.payment;
+      isExtendedMedia,
+    } = selectTabState(global).payment;
 
     const chat = inputInvoice && 'chatId' in inputInvoice ? selectChat(global, inputInvoice.chatId) : undefined;
     const isProviderError = Boolean(invoice && (!nativeProvider || !SUPPORTED_PROVIDERS.has(nativeProvider)));
@@ -608,6 +649,7 @@ export default memo(withGlobal<OwnProps>(
       stripeId: stripeCredentials?.id,
       savedCredentials,
       passwordValidUntil: temporaryPassword?.validUntil,
+      isExtendedMedia,
     };
   },
 )(PaymentModal));
@@ -687,7 +729,19 @@ function getRequestInfo(paymentState: FormState) {
   };
 }
 
-function getCredentials(paymentState: FormState) {
+export type ApiCredentials = {
+  data: {
+    cardNumber: string;
+    cardholder: string;
+    expiryMonth: string;
+    expiryYear: string;
+    cvv: string;
+    country: string;
+    zip: string;
+  };
+};
+
+function getCredentials(paymentState: FormState): ApiCredentials {
   const {
     cardNumber, cardholder, expiry, cvv, billingCountry, billingZip,
   } = paymentState;

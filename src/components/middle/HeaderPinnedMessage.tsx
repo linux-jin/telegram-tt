@@ -5,21 +5,33 @@ import { getActions } from '../../global';
 import type { ApiMessage } from '../../api/types';
 
 import { getPictogramDimensions } from '../common/helpers/mediaDimensions';
-import { getMessageMediaHash, getMessageSingleInlineButton } from '../../global/helpers';
-import { renderMessageSummary } from '../common/helpers/renderMessageText';
+import {
+  getMessageIsSpoiler,
+  getMessageMediaHash, getMessageSingleInlineButton,
+} from '../../global/helpers';
 import buildClassName from '../../util/buildClassName';
-import { IS_TOUCH_ENV } from '../../util/environment';
+import { IS_TOUCH_ENV } from '../../util/windowEnvironment';
+import renderText from '../common/helpers/renderText';
 
 import useMedia from '../../hooks/useMedia';
 import useThumbnail from '../../hooks/useThumbnail';
 import useFlag from '../../hooks/useFlag';
 import useLang from '../../hooks/useLang';
+import useAsyncRendering from '../right/hooks/useAsyncRendering';
 
 import RippleEffect from '../ui/RippleEffect';
 import ConfirmDialog from '../ui/ConfirmDialog';
 import Button from '../ui/Button';
 import PinnedMessageNavigation from './PinnedMessageNavigation';
+import MessageSummary from '../common/MessageSummary';
+import MediaSpoiler from '../common/MediaSpoiler';
+import AnimatedCounter from '../common/AnimatedCounter';
+import Transition from '../ui/Transition';
+import Spinner from '../ui/Spinner';
 
+import styles from './HeaderPinnedMessage.module.scss';
+
+const SHOW_LOADER_DELAY = 450;
 type OwnProps = {
   message: ApiMessage;
   index: number;
@@ -29,17 +41,23 @@ type OwnProps = {
   onUnpinMessage?: (id: number) => void;
   onClick?: () => void;
   onAllPinnedClick?: () => void;
+  isLoading?: boolean;
+  isFullWidth?: boolean;
 };
 
 const HeaderPinnedMessage: FC<OwnProps> = ({
   message, count, index, customTitle, className, onUnpinMessage, onClick, onAllPinnedClick,
+  isLoading, isFullWidth,
 }) => {
   const { clickBotInlineButton } = getActions();
   const lang = useLang();
+
   const mediaThumbnail = useThumbnail(message);
   const mediaBlobUrl = useMedia(getMessageMediaHash(message, 'pictogram'));
+  const isSpoiler = getMessageIsSpoiler(message);
+  const canRenderLoader = useAsyncRendering([isLoading], SHOW_LOADER_DELAY);
+  const shouldShowLoader = canRenderLoader && isLoading;
 
-  const text = renderMessageSummary(lang, message, Boolean(mediaThumbnail));
   const [isUnpinDialogOpen, openUnpinDialog, closeUnpinDialog] = useFlag();
 
   const handleUnpinMessage = useCallback(() => {
@@ -60,18 +78,44 @@ const HeaderPinnedMessage: FC<OwnProps> = ({
 
   const [noHoverColor, markNoHoverColor, unmarkNoHoverColor] = useFlag();
 
+  function renderPictogram(thumbDataUri?: string, blobUrl?: string, spoiler?: boolean) {
+    const { width, height } = getPictogramDimensions();
+    const srcUrl = blobUrl || thumbDataUri;
+
+    return (
+      <div className={styles.pinnedThumb}>
+        {thumbDataUri && !spoiler
+          && <img className={styles.pinnedThumbImage} src={srcUrl} width={width} height={height} alt="" />}
+        {thumbDataUri
+          && <MediaSpoiler thumbDataUri={srcUrl} isVisible={Boolean(spoiler)} width={width} height={height} />}
+      </div>
+    );
+  }
+
   return (
-    <div className={buildClassName('HeaderPinnedMessage-wrapper', className)}>
-      {count > 1 && (
+    <div className={buildClassName(
+      'HeaderPinnedMessageWrapper', styles.root, isFullWidth && 'full-width', className,
+    )}
+    >
+      {(count > 1 || shouldShowLoader) && (
         <Button
           round
           size="smaller"
           color="translucent"
-          className="pin-list-button"
           ariaLabel={lang('EventLogFilterPinnedMessages')}
-          onClick={onAllPinnedClick}
+          onClick={!shouldShowLoader ? onAllPinnedClick : undefined}
         >
-          <i className="icon-pin-list" />
+          <Spinner
+            color="blue"
+            className={buildClassName(
+              styles.loading, styles.pinListIcon, !shouldShowLoader && styles.pinListIconHidden,
+            )}
+          />
+          <i
+            className={buildClassName(
+              'icon-pin-list', styles.pinListIcon, shouldShowLoader && styles.pinListIconHidden,
+            )}
+          />
         </Button>
       )}
       {onUnpinMessage && (
@@ -80,7 +124,6 @@ const HeaderPinnedMessage: FC<OwnProps> = ({
           size="smaller"
           color="translucent"
           ariaLabel={lang('UnpinMessageAlertTitle')}
-          className="unpin-button"
           onClick={openUnpinDialog}
         >
           <i className="icon-close" />
@@ -94,7 +137,7 @@ const HeaderPinnedMessage: FC<OwnProps> = ({
         confirmHandler={handleUnpinMessage}
       />
       <div
-        className={buildClassName('HeaderPinnedMessage', noHoverColor && 'no-hover')}
+        className={buildClassName(styles.pinnedMessage, noHoverColor && styles.noHover)}
         onClick={onClick}
         dir={lang.isRtl ? 'rtl' : undefined}
       >
@@ -102,18 +145,32 @@ const HeaderPinnedMessage: FC<OwnProps> = ({
           count={count}
           index={index}
         />
-        {mediaThumbnail && renderPictogram(mediaThumbnail, mediaBlobUrl)}
-        <div className="message-text">
-          <div className="title" dir="auto">
-            {customTitle || `${lang('PinnedMessage')} ${index > 0 ? `#${count - index}` : ''}`}
+        <Transition activeKey={message.id} name="slide-vertical" className={styles.pictogramTransition}>
+          {renderPictogram(
+            mediaThumbnail,
+            mediaBlobUrl,
+            isSpoiler,
+          )}
+        </Transition>
+        <div className={buildClassName(styles.messageText, mediaThumbnail && styles.withMedia)}>
+          <div className={styles.title} dir="auto">
+            {!customTitle && (
+              <AnimatedCounter text={`${lang('PinnedMessage')} ${index > 0 ? `#${count - index}` : ''}`} />
+            )}
+
+            {customTitle && renderText(customTitle)}
           </div>
-          <p dir="auto">{text}</p>
-          <RippleEffect />
+          <Transition activeKey={message.id} name="slide-vertical-fade" className={styles.messageTextTransition}>
+            <p dir="auto" className={styles.summary}>
+              <MessageSummary lang={lang} message={message} noEmoji={Boolean(mediaThumbnail)} />
+            </p>
+          </Transition>
         </div>
+        <RippleEffect />
         {inlineButton && (
           <Button
             size="tiny"
-            className="inline-button"
+            className={styles.inlineButton}
             onClick={handleInlineButtonClick}
             shouldStopPropagation
             onMouseEnter={!IS_TOUCH_ENV ? markNoHoverColor : undefined}
@@ -126,13 +183,5 @@ const HeaderPinnedMessage: FC<OwnProps> = ({
     </div>
   );
 };
-
-function renderPictogram(thumbDataUri: string, blobUrl?: string) {
-  const { width, height } = getPictogramDimensions();
-
-  return (
-    <img src={blobUrl || thumbDataUri} width={width} height={height} alt="" />
-  );
-}
 
 export default memo(HeaderPinnedMessage);

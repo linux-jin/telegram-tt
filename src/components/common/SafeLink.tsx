@@ -1,7 +1,9 @@
-import type { FC } from '../../lib/teact/teact';
 import React, { memo, useCallback } from '../../lib/teact/teact';
 import { getActions } from '../../global';
 import convertPunycode from '../../lib/punycode';
+
+import type { FC } from '../../lib/teact/teact';
+import { ApiMessageEntityTypes } from '../../api/types';
 
 import {
   DEBUG,
@@ -27,10 +29,11 @@ const SafeLink: FC<OwnProps> = ({
   const { openUrl } = getActions();
 
   const content = children || text;
-  const isSafe = url === content;
+  const isSafe = url === text;
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLAnchorElement, MouseEvent>) => {
     if (!url) return true;
+
     e.preventDefault();
     openUrl({ url, shouldSkipModal: isSafe });
 
@@ -55,6 +58,7 @@ const SafeLink: FC<OwnProps> = ({
       className={classNames}
       onClick={handleClick}
       dir={isRtl ? 'rtl' : 'auto'}
+      data-entity-type={ApiMessageEntityTypes.Url}
     >
       {content}
     </a>

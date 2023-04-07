@@ -58,7 +58,7 @@ const AuthCode: FC<StateProps> = ({
   const lang = useLang();
   // eslint-disable-next-line no-null/no-null
   const qrCodeRef = useRef<HTMLDivElement>(null);
-  const continueText = useLangString(suggestedLanguage, 'ContinueOnThisLanguage');
+  const continueText = useLangString(suggestedLanguage, 'ContinueOnThisLanguage', true);
   const [isLoading, markIsLoading, unmarkIsLoading] = useFlag();
   const [isQrMounted, markQrMounted, unmarkQrMounted] = useFlag();
 
@@ -129,6 +129,10 @@ const AuthCode: FC<StateProps> = ({
     });
   }, [markIsLoading, setSettingOption, suggestedLanguage, unmarkIsLoading]);
 
+  const habdleReturnToAuthPhoneNumber = useCallback(() => {
+    returnToAuthPhoneNumber();
+  }, [returnToAuthPhoneNumber]);
+
   const isAuthReady = authState === 'authorizationStateWaitQrCode';
 
   return (
@@ -162,7 +166,7 @@ const AuthCode: FC<StateProps> = ({
           <li><span>{lang('Login.QR.Help3')}</span></li>
         </ol>
         {isAuthReady && (
-          <Button isText onClick={returnToAuthPhoneNumber}>{lang('Login.QR.Cancel')}</Button>
+          <Button isText onClick={habdleReturnToAuthPhoneNumber}>{lang('Login.QR.Cancel')}</Button>
         )}
         {suggestedLanguage && suggestedLanguage !== language && continueText && (
           <Button isText isLoading={isLoading} onClick={handleLangChange}>{continueText}</Button>

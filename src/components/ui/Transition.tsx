@@ -20,7 +20,8 @@ export type TransitionProps = {
   activeKey: number;
   name: (
     'none' | 'slide' | 'slide-rtl' | 'mv-slide' | 'slide-fade' | 'zoom-fade' | 'slide-layers'
-    | 'fade' | 'push-slide' | 'reveal' | 'slide-optimized' | 'slide-optimized-rtl'
+    | 'fade' | 'push-slide' | 'reveal' | 'slide-optimized' | 'slide-optimized-rtl' | 'slide-vertical'
+    | 'slide-vertical-fade'
   );
   direction?: 'auto' | 'inverse' | 1 | -1;
   renderCount?: number;
@@ -38,6 +39,7 @@ export type TransitionProps = {
 const classNames = {
   active: 'Transition__slide--active',
 };
+const FALLBACK_ANIMATION_END = 1000;
 
 const Transition: FC<TransitionProps> = ({
   ref,
@@ -211,7 +213,7 @@ const Transition: FC<TransitionProps> = ({
           : childNodes[activeIndex];
 
       if (watchedNode) {
-        waitForAnimationEnd(watchedNode, onAnimationEnd);
+        waitForAnimationEnd(watchedNode, onAnimationEnd, undefined, FALLBACK_ANIMATION_END);
       } else {
         onAnimationEnd();
       }
@@ -237,12 +239,14 @@ const Transition: FC<TransitionProps> = ({
       const container = containerRef.current!;
       const activeElement = container.querySelector<HTMLDivElement>(`.${classNames.active}`)
         || container.querySelector<HTMLDivElement>('.from');
-
-      if (activeElement) {
-        activeElement.style.height = 'auto';
-        container.style.height = `${activeElement.clientHeight}px`;
-        container.style.flexBasis = `${activeElement.clientHeight}px`;
+      const clientHeight = activeElement?.clientHeight;
+      if (!clientHeight) {
+        return;
       }
+
+      activeElement.style.height = 'auto';
+      container.style.height = `${clientHeight}px`;
+      container.style.flexBasis = `${clientHeight}px`;
     }
   }, [shouldRestoreHeight, children]);
 

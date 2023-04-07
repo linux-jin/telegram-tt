@@ -1,13 +1,22 @@
 import type { ApiMessage } from '../../../../api/types';
 
-import { IS_CANVAS_FILTER_SUPPORTED, IS_SINGLE_COLUMN_LAYOUT } from '../../../../util/environment';
+import { IS_CANVAS_FILTER_SUPPORTED } from '../../../../util/windowEnvironment';
 import { getMessageMediaThumbDataUri } from '../../../../global/helpers';
 import useCanvasBlur from '../../../../hooks/useCanvasBlur';
+import useAppLayout from '../../../../hooks/useAppLayout';
 
-export default function useBlurredMediaThumbRef(message: ApiMessage, fullMediaData?: string) {
+export default function useBlurredMediaThumbRef(
+  message: ApiMessage,
+  isDisabled?: boolean | string,
+  forcedUri?: string,
+) {
+  const { isMobile } = useAppLayout();
+
+  const dataUri = forcedUri || getMessageMediaThumbDataUri(message);
+
   return useCanvasBlur(
-    getMessageMediaThumbDataUri(message),
-    Boolean(fullMediaData),
-    IS_SINGLE_COLUMN_LAYOUT && !IS_CANVAS_FILTER_SUPPORTED,
+    dataUri,
+    Boolean(isDisabled),
+    isMobile && !IS_CANVAS_FILTER_SUPPORTED,
   );
 }

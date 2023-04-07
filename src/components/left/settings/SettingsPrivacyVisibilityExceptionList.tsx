@@ -86,7 +86,7 @@ const SettingsPrivacyVisibilityExceptionList: FC<OwnProps & StateProps> = ({
 
   const handleSubmit = useCallback(() => {
     setPrivacySettings({
-      privacyKey: getPrivacyKey(screen),
+      privacyKey: getPrivacyKey(screen)!,
       isAllowList: Boolean(isAllowList),
       contactsIds: newSelectedContactIds,
     });
@@ -116,7 +116,7 @@ const SettingsPrivacyVisibilityExceptionList: FC<OwnProps & StateProps> = ({
         onClick={handleSubmit}
         ariaLabel={isAllowList ? lang('AlwaysAllow') : lang('NeverAllow')}
       >
-        <i className="icon-arrow-right" />
+        <i className="icon-check" />
       </FloatingActionButton>
     </div>
   );

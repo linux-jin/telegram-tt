@@ -1,13 +1,12 @@
+import type { TeactNode } from '../../lib/teact/teact';
 import type { ApiMessage } from '../../api/types';
 import { ApiMessageEntityTypes } from '../../api/types';
 import { CONTENT_NOT_SUPPORTED } from '../../config';
 
-import type { TextPart } from '../../types';
 import type { LangFn } from '../../hooks/useLang';
 
 import trimText from '../../util/trimText';
 import { getMessageText, getMessageTranscription } from './messages';
-import { getMessageRecentReaction } from './reactions';
 
 const SPOILER_CHARS = ['⠺', '⠵', '⠞', '⠟'];
 export const TRUNCATED_SUMMARY_LENGTH = 80;
@@ -17,13 +16,12 @@ export function getMessageSummaryText(
   message: ApiMessage,
   noEmoji = false,
   truncateLength = TRUNCATED_SUMMARY_LENGTH,
-  noReactions = true,
   isExtended = false,
 ) {
-  const emoji = !noEmoji && getMessageSummaryEmoji(message, noReactions);
+  const emoji = !noEmoji && getMessageSummaryEmoji(message);
   const emojiWithSpace = emoji ? `${emoji} ` : '';
   const text = trimText(getMessageTextWithSpoilers(message), truncateLength);
-  const description = getMessageSummaryDescription(lang, message, text, noReactions, isExtended);
+  const description = getMessageSummaryDescription(lang, message, text, isExtended);
 
   return `${emojiWithSpace}${description}`;
 }
@@ -58,7 +56,7 @@ export function getMessageTextWithSpoilers(message: ApiMessage) {
   return transcription ? `${transcription}\n${text}` : text;
 }
 
-export function getMessageSummaryEmoji(message: ApiMessage, noReactions = true) {
+export function getMessageSummaryEmoji(message: ApiMessage) {
   const {
     photo,
     video,
@@ -97,19 +95,13 @@ export function getMessageSummaryEmoji(message: ApiMessage, noReactions = true) 
     return '📊';
   }
 
-  const reaction = !noReactions && getMessageRecentReaction(message);
-  if (reaction) {
-    return reaction.reaction;
-  }
-
   return undefined;
 }
 
 export function getMessageSummaryDescription(
   lang: LangFn,
   message: ApiMessage,
-  truncatedText?: string | TextPart[],
-  noReactions = true,
+  truncatedText?: string | TeactNode,
   isExtended = false,
 ) {
   const {
@@ -127,7 +119,7 @@ export function getMessageSummaryDescription(
     game,
   } = message.content;
 
-  let summary: string | TextPart[] | undefined;
+  let summary: string | TeactNode | undefined;
 
   if (message.groupedId) {
     summary = truncatedText || lang('lng_in_dlg_album');
@@ -166,7 +158,7 @@ export function getMessageSummaryDescription(
   }
 
   if (invoice) {
-    summary = `${lang('PaymentInvoice')}: ${invoice.text}`;
+    summary = invoice.extendedMedia ? invoice.title : `${lang('PaymentInvoice')}: ${invoice.text}`;
   }
 
   if (text) {
@@ -187,11 +179,6 @@ export function getMessageSummaryDescription(
 
   if (game) {
     summary = `🎮 ${game.title}`;
-  }
-
-  const reaction = !noReactions && getMessageRecentReaction(message);
-  if (summary && reaction) {
-    summary = `to your "${summary}"`;
   }
 
   return summary || CONTENT_NOT_SUPPORTED;

@@ -1,13 +1,13 @@
 import type { ApiMessage } from '../../../../api/types';
 
-import { EMOJI_SIZES } from '../../../../config';
+import { EMOJI_SIZES, MESSAGE_CONTENT_CLASS_NAME } from '../../../../config';
 import { getMessageContent } from '../../../../global/helpers';
 
 export function buildContentClassName(
   message: ApiMessage,
   {
-    hasReply,
-    customShape,
+    hasSubheader,
+    isCustomShape,
     isLastInGroup,
     asForwarded,
     hasThread,
@@ -18,8 +18,8 @@ export function buildContentClassName(
     isGeoLiveActive,
     withVoiceTranscription,
   }: {
-    hasReply?: boolean;
-    customShape?: boolean | number;
+    hasSubheader?: boolean;
+    isCustomShape?: boolean | number;
     isLastInGroup?: boolean;
     asForwarded?: boolean;
     hasThread?: boolean;
@@ -35,13 +35,13 @@ export function buildContentClassName(
     text, photo, video, audio, voice, document, poll, webPage, contact, location, invoice,
   } = getMessageContent(message);
 
-  const classNames = ['message-content'];
-  const isMedia = photo || video || location;
+  const classNames = [MESSAGE_CONTENT_CLASS_NAME];
+  const isMedia = photo || video || location || invoice?.extendedMedia;
   const hasText = text || location?.type === 'venue' || isGeoLiveActive;
   const isMediaWithNoText = isMedia && !hasText;
   const isViaBot = Boolean(message.viaBotId);
 
-  if (message.emojiOnlyCount) {
+  if (!isMedia && message.emojiOnlyCount) {
     classNames.push('emoji-only');
     if (message.emojiOnlyCount <= EMOJI_SIZES) {
       classNames.push(`emoji-only-${message.emojiOnlyCount}`);
@@ -54,7 +54,7 @@ export function buildContentClassName(
     classNames.push('has-action-button');
   }
 
-  if (customShape) {
+  if (isCustomShape) {
     classNames.push('custom-shape');
     if (video?.isRound) {
       classNames.push('round');
@@ -87,7 +87,7 @@ export function buildContentClassName(
     }
   }
 
-  if (invoice) {
+  if (invoice && !invoice.extendedMedia) {
     classNames.push('invoice');
   }
 
@@ -95,8 +95,8 @@ export function buildContentClassName(
     classNames.push('is-forwarded');
   }
 
-  if (hasReply) {
-    classNames.push('is-reply');
+  if (hasSubheader) {
+    classNames.push('has-subheader');
   }
 
   if (hasThread) {
@@ -115,14 +115,14 @@ export function buildContentClassName(
     classNames.push('force-sender-name');
   }
 
-  if (!customShape) {
+  if (!isCustomShape) {
     classNames.push('has-shadow');
 
     if (isMedia && hasComments) {
       classNames.push('has-background');
     }
 
-    if (hasReply || asForwarded || !isMediaWithNoText || isViaBot || forceSenderName) {
+    if (hasSubheader || asForwarded || isViaBot || !isMediaWithNoText || forceSenderName) {
       classNames.push('has-solid-background');
     }
 

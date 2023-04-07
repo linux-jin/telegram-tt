@@ -8,15 +8,17 @@ import type {
 import type { AnimationLevel } from '../../types';
 import { MediaViewerOrigin } from '../../types';
 
-import { IS_SINGLE_COLUMN_LAYOUT, IS_TOUCH_ENV } from '../../util/environment';
+import { IS_TOUCH_ENV } from '../../util/windowEnvironment';
 import {
-  selectChat, selectChatMessage, selectIsMessageProtected, selectScheduledMessage, selectUser,
+  selectChat, selectChatMessage, selectTabState, selectIsMessageProtected, selectScheduledMessage, selectUser,
 } from '../../global/selectors';
 import { calculateMediaViewerDimensions } from '../common/helpers/mediaDimensions';
 import { renderMessageText } from '../common/helpers/renderMessageText';
 import stopEvent from '../../util/stopEvent';
 import buildClassName from '../../util/buildClassName';
 import { useMediaProps } from './hooks/useMediaProps';
+import useAppLayout from '../../hooks/useAppLayout';
+import useLang from '../../hooks/useLang';
 
 import Spinner from '../ui/Spinner';
 import MediaViewerFooter from './MediaViewerFooter';
@@ -55,6 +57,7 @@ type StateProps = {
 };
 
 const ANIMATION_DURATION = 350;
+const MOBILE_VERSION_CONTROL_WIDTH = 350;
 
 const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
   const {
@@ -77,19 +80,19 @@ const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
     isMoving,
   } = props;
 
+  const lang = useLang();
+
   const isGhostAnimation = animationLevel === 2;
 
   const {
     isVideo,
     isPhoto,
+    actionPhoto,
     bestImageData,
+    bestData,
     dimensions,
     isGif,
     isVideoAvatar,
-    localBlobUrl,
-    fullMediaBlobUrl,
-    previewBlobUrl,
-    pictogramBlobUrl,
     videoSize,
     loadProgress,
   } = useMediaProps({
@@ -97,19 +100,24 @@ const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
   });
 
   const isOpen = Boolean(avatarOwner || mediaId);
+  const { isMobile } = useAppLayout();
 
   const toggleControls = useCallback((isVisible) => {
     setControlsVisible?.(isVisible);
   }, [setControlsVisible]);
 
-  if (avatarOwner) {
+  const toggleControlsOnMove = useCallback(() => {
+    toggleControls(true);
+  }, [toggleControls]);
+
+  if (avatarOwner || actionPhoto) {
     if (!isVideoAvatar) {
       return (
         <div key={chatId} className="MediaViewerContent">
           {renderPhoto(
-            fullMediaBlobUrl || previewBlobUrl,
+            bestData,
             calculateMediaViewerDimensions(dimensions, false),
-            !IS_SINGLE_COLUMN_LAYOUT && !isProtected,
+            !isMobile && !isProtected,
             isProtected,
           )}
         </div>
@@ -119,7 +127,7 @@ const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
         <div key={chatId} className="MediaViewerContent">
           <VideoPlayer
             key={mediaId}
-            url={localBlobUrl || fullMediaBlobUrl}
+            url={bestData}
             isGif
             posterData={bestImageData}
             posterSize={calculateMediaViewerDimensions(dimensions!, false, true)}
@@ -143,31 +151,37 @@ const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
   }
 
   if (!message) return undefined;
-  const textParts = renderMessageText(message);
+  const textParts = message.content.action?.type === 'suggestProfilePhoto'
+    ? lang('Conversation.SuggestedPhotoTitle')
+    : renderMessageText(message);
+
   const hasFooter = Boolean(textParts);
+  const posterSize = message && calculateMediaViewerDimensions(dimensions!, hasFooter, isVideo);
+  const isForceMobileVersion = isMobile || shouldForceMobileVersion(posterSize);
 
   return (
     <div
       className={buildClassName('MediaViewerContent', hasFooter && 'has-footer')}
+      onMouseMove={isForceMobileVersion && !IS_TOUCH_ENV ? toggleControlsOnMove : undefined}
     >
       {isPhoto && renderPhoto(
-        localBlobUrl || fullMediaBlobUrl || previewBlobUrl || pictogramBlobUrl,
-        message && calculateMediaViewerDimensions(dimensions!, hasFooter),
-        !IS_SINGLE_COLUMN_LAYOUT && !isProtected,
+        bestData,
+        posterSize,
+        !isMobile && !isProtected,
         isProtected,
       )}
       {isVideo && (!isActive ? renderVideoPreview(
         bestImageData,
-        message && calculateMediaViewerDimensions(dimensions!, hasFooter, true),
-        !IS_SINGLE_COLUMN_LAYOUT && !isProtected,
+        posterSize,
+        !isMobile && !isProtected,
         isProtected,
       ) : (
         <VideoPlayer
           key={mediaId}
-          url={localBlobUrl || fullMediaBlobUrl}
+          url={bestData}
           isGif={isGif}
           posterData={bestImageData}
-          posterSize={message && calculateMediaViewerDimensions(dimensions!, hasFooter, true)}
+          posterSize={posterSize}
           loadProgress={loadProgress}
           fileSize={videoSize!}
           areControlsVisible={areControlsVisible}
@@ -177,6 +191,7 @@ const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
           onClose={onClose}
           isMuted={isMuted}
           isHidden={isHidden}
+          isForceMobileVersion={isForceMobileVersion}
           isProtected={isProtected}
           volume={volume}
           isClickDisabled={isMoving}
@@ -188,6 +203,7 @@ const MediaViewerContent: FC<OwnProps & StateProps> = (props) => {
           text={textParts}
           onClick={onFooterClick}
           isProtected={isProtected}
+          isForceMobileVersion={isForceMobileVersion}
           isHidden={IS_TOUCH_ENV ? !areControlsVisible : false}
           isForVideo={isVideo && !isGif}
         />
@@ -211,7 +227,7 @@ export default memo(withGlobal<OwnProps>(
       isMuted,
       playbackRate,
       isHidden,
-    } = global.mediaViewer;
+    } = selectTabState(global).mediaViewer;
 
     if (origin === MediaViewerOrigin.SearchResult) {
       if (!(chatId && mediaId)) {
@@ -336,4 +352,9 @@ function renderVideoPreview(blobUrl?: string, imageSize?: ApiDimensions, canDrag
         <Spinner color="white" />
       </div>
     );
+}
+
+function shouldForceMobileVersion(posterSize?: { width: number; height: number }) {
+  if (!posterSize) return false;
+  return posterSize.width < MOBILE_VERSION_CONTROL_WIDTH;
 }

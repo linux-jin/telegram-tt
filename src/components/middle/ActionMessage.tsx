@@ -5,15 +5,18 @@ import React, {
 import { getActions, withGlobal } from '../../global';
 
 import type {
-  ApiUser, ApiMessage, ApiChat, ApiSticker,
+  ApiUser, ApiMessage, ApiChat, ApiSticker, ApiTopic,
 } from '../../api/types';
 import type { FocusDirection } from '../../types';
+import type { PinnedIntersectionChangedCallback } from './hooks/usePinnedMessage';
 
 import {
   selectUser,
   selectChatMessage,
   selectIsMessageFocused,
   selectChat,
+  selectTopicFromMessage,
+  selectTabState,
 } from '../../global/selectors';
 import { getMessageHtmlId, isChatChannel } from '../../global/helpers';
 import buildClassName from '../../util/buildClassName';
@@ -30,15 +33,20 @@ import useShowTransition from '../../hooks/useShowTransition';
 
 import ContextMenuContainer from './message/ContextMenuContainer.async';
 import AnimatedIconFromSticker from '../common/AnimatedIconFromSticker';
+import ActionMessageSuggestedAvatar from './ActionMessageSuggestedAvatar';
 
 type OwnProps = {
   message: ApiMessage;
-  observeIntersection?: ObserveFn;
-  observeIntersectionForAnimation?: ObserveFn;
+  threadId?: number;
+  observeIntersectionForReading?: ObserveFn;
+  observeIntersectionForLoading?: ObserveFn;
+  observeIntersectionForPlaying?: ObserveFn;
   isEmbedded?: boolean;
   appearanceOrder?: number;
   isLastInList?: boolean;
+  isInsideTopic?: boolean;
   memoFirstUnreadIdRef?: { current: number | undefined };
+  onPinnedIntersectionChange?: PinnedIntersectionChangedCallback;
 };
 
 type StateProps = {
@@ -49,6 +57,7 @@ type StateProps = {
   targetMessage?: ApiMessage;
   targetChatId?: string;
   isFocused: boolean;
+  topic?: ApiTopic;
   focusDirection?: FocusDirection;
   noFocusHighlight?: boolean;
   premiumGiftSticker?: ApiSticker;
@@ -58,8 +67,6 @@ const APPEARANCE_DELAY = 10;
 
 const ActionMessage: FC<OwnProps & StateProps> = ({
   message,
-  observeIntersection,
-  observeIntersectionForAnimation,
   isEmbedded,
   appearanceOrder = 0,
   isLastInList,
@@ -73,7 +80,13 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
   focusDirection,
   noFocusHighlight,
   premiumGiftSticker,
+  isInsideTopic,
+  topic,
   memoFirstUnreadIdRef,
+  observeIntersectionForReading,
+  observeIntersectionForLoading,
+  observeIntersectionForPlaying,
+  onPinnedIntersectionChange,
 }) => {
   const { openPremiumModal, requestConfetti } = getActions();
 
@@ -82,13 +95,22 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
   // eslint-disable-next-line no-null/no-null
   const ref = useRef<HTMLDivElement>(null);
 
-  useOnIntersect(ref, observeIntersection);
+  useOnIntersect(ref, observeIntersectionForReading);
   useEnsureMessage(message.chatId, message.replyToMessageId, targetMessage);
   useFocusMessage(ref, message.chatId, isFocused, focusDirection, noFocusHighlight);
+
+  useEffect(() => {
+    if (!message.isPinned) return undefined;
+
+    return () => {
+      onPinnedIntersectionChange?.({ viewportPinnedIdsToRemove: [message.id], isUnmount: true });
+    };
+  }, [onPinnedIntersectionChange, message.isPinned, message.id]);
 
   const noAppearanceAnimation = appearanceOrder <= 0;
   const [isShown, markShown] = useFlag(noAppearanceAnimation);
   const isGift = Boolean(message.content.action?.text.startsWith('ActionGift'));
+  const isSuggestedAvatar = message.content.action?.type === 'suggestProfilePhoto' && message.content.action!.photo;
 
   useEffect(() => {
     if (noAppearanceAnimation) {
@@ -98,7 +120,7 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
     setTimeout(markShown, appearanceOrder * APPEARANCE_DELAY);
   }, [appearanceOrder, markShown, noAppearanceAnimation]);
 
-  const isVisible = useIsIntersecting(ref, observeIntersectionForAnimation);
+  const isVisible = useIsIntersecting(ref, observeIntersectionForPlaying);
 
   const shouldShowConfettiRef = useRef((() => {
     const isUnread = memoFirstUnreadIdRef?.current && message.id >= memoFirstUnreadIdRef.current;
@@ -128,7 +150,10 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
     targetUsers,
     targetMessage,
     targetChatId,
-    { asTextWithSpoilers: isEmbedded },
+    topic,
+    { isEmbedded },
+    observeIntersectionForLoading,
+    observeIntersectionForPlaying,
   );
   const {
     isContextMenuOpen, contextMenuPosition,
@@ -151,8 +176,14 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
     });
   };
 
+  // TODO Refactoring for action rendering
+  const shouldSkipRender = isInsideTopic && message.content.action?.text === 'TopicWasCreatedAction';
+  if (shouldSkipRender) {
+    return <span ref={ref} />;
+  }
+
   if (isEmbedded) {
-    return <span className="embedded-action-message">{content}</span>;
+    return <span ref={ref} className="embedded-action-message">{content}</span>;
   }
 
   function renderGift() {
@@ -176,9 +207,10 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
   const className = buildClassName(
     'ActionMessage message-list-item',
     isFocused && !noFocusHighlight && 'focused',
-    isGift && 'premium-gift',
+    (isGift || isSuggestedAvatar) && 'centered-action',
     isContextMenuShown && 'has-menu-open',
     isLastInList && 'last-in-list',
+    !isGift && !isSuggestedAvatar && 'in-one-row',
     transitionClassNames,
   );
 
@@ -188,11 +220,18 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
       id={getMessageHtmlId(message.id)}
       className={className}
       data-message-id={message.id}
+      data-is-pinned={message.isPinned || undefined}
       onMouseDown={handleMouseDown}
       onContextMenu={handleContextMenu}
     >
-      <span>{content}</span>
+      {!isSuggestedAvatar && <span className="action-message-content">{content}</span>}
       {isGift && renderGift()}
+      {isSuggestedAvatar && (
+        <ActionMessageSuggestedAvatar
+          message={message}
+          content={content}
+        />
+      )}
       {contextMenuPosition && (
         <ContextMenuContainer
           isOpen={isContextMenuOpen}
@@ -208,7 +247,7 @@ const ActionMessage: FC<OwnProps & StateProps> = ({
 };
 
 export default memo(withGlobal<OwnProps>(
-  (global, { message }): StateProps => {
+  (global, { message, threadId }): StateProps => {
     const { byId: usersById } = global.users;
     const userId = message.senderId;
     const { targetUserIds, targetChatId } = message.content.action || {};
@@ -217,14 +256,18 @@ export default memo(withGlobal<OwnProps>(
       ? selectChatMessage(global, message.chatId, targetMessageId)
       : undefined;
 
-    const isFocused = selectIsMessageFocused(global, message);
-    const { direction: focusDirection, noHighlight: noFocusHighlight } = (isFocused && global.focusedMessage) || {};
+    const isFocused = threadId ? selectIsMessageFocused(global, message, threadId) : false;
+    const {
+      direction: focusDirection,
+      noHighlight: noFocusHighlight,
+    } = (isFocused && selectTabState(global).focusedMessage) || {};
 
     const chat = selectChat(global, message.chatId);
     const isChat = chat && (isChatChannel(chat) || userId === message.chatId);
     const senderUser = !isChat && userId ? selectUser(global, userId) : undefined;
     const senderChat = isChat ? chat : undefined;
     const premiumGiftSticker = global.premiumGifts?.stickers?.[0];
+    const topic = selectTopicFromMessage(global, message);
 
     return {
       usersById,
@@ -235,6 +278,7 @@ export default memo(withGlobal<OwnProps>(
       targetMessage,
       isFocused,
       premiumGiftSticker,
+      topic,
       ...(isFocused && { focusDirection, noFocusHighlight }),
     };
   },

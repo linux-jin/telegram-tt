@@ -43,7 +43,7 @@ export function pickTruthy<T, K extends keyof T>(object: T, keys: K[]) {
   }, {} as Pick<T, K>);
 }
 
-export function omit<T, K extends keyof T>(object: T, keys: K[]) {
+export function omit<T extends object, K extends keyof T>(object: T, keys: K[]): Omit<T, K> {
   const stringKeys = new Set(keys.map(String));
   const savedKeys = Object.keys(object)
     .filter((key) => !stringKeys.has(key)) as Array<Exclude<keyof T, K>>;
@@ -117,8 +117,19 @@ export function split<T extends any>(array: T[], chunkSize: number) {
   return result;
 }
 
+export function partition<T extends unknown>(
+  array: T[], filter: (value: T, index: number, array: T[]) => boolean,
+): [T[], T[]] {
+  const pass: T[] = [];
+  const fail: T[] = [];
+
+  array.forEach((e, idx, arr) => (filter(e, idx, arr) ? pass : fail).push(e));
+
+  return [pass, fail];
+}
+
 export function cloneDeep<T>(value: T): T {
-  if (typeof value !== 'object') {
+  if (!isObject(value)) {
     return value;
   }
 
@@ -130,6 +141,48 @@ export function cloneDeep<T>(value: T): T {
     acc[key as keyof T] = cloneDeep(value[key as keyof T]);
     return acc;
   }, {} as T);
+}
+
+function isObject(value: any): value is object {
+  // eslint-disable-next-line no-null/no-null
+  return typeof value === 'object' && value !== null;
+}
+
+export function orderHistoryIds(listedIds: number[]) {
+  return listedIds.sort((a, b) => a - b);
+}
+
+export function mergeIdRanges(ranges: number[][], idsUpdate: number[]): number[][] {
+  let hasIntersection = false;
+  let newOutlyingLists = ranges.length ? ranges.map((list) => {
+    if (areSortedArraysIntersecting(list, idsUpdate) && !hasIntersection) {
+      hasIntersection = true;
+      return orderHistoryIds(unique(list.concat(idsUpdate)));
+    }
+    return list;
+  }) : [idsUpdate];
+
+  if (!hasIntersection) {
+    newOutlyingLists = newOutlyingLists.concat([idsUpdate]);
+  }
+
+  newOutlyingLists.sort((a, b) => a[0] - b[0]);
+
+  let length = newOutlyingLists.length;
+  for (let i = 0; i < length; i++) {
+    const array = newOutlyingLists[i];
+    const prevArray = newOutlyingLists[i - 1];
+
+    if (prevArray && (prevArray.includes(array[0]) || prevArray.includes(array[0] - 1))) {
+      newOutlyingLists[i - 1] = orderHistoryIds(unique(array.concat(prevArray)));
+      newOutlyingLists.splice(i, 1);
+
+      length--;
+      i--;
+    }
+  }
+
+  return newOutlyingLists;
 }
 
 export function findLast<T>(array: Array<T>, predicate: (value: T, index: number, obj: T[]) => boolean): T | undefined {

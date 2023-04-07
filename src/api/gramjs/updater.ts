@@ -1,19 +1,23 @@
 import type { GroupCallConnectionData } from '../../lib/secret-sauce';
 import { Api as GramJs, connection } from '../../lib/gramjs';
-import type { ApiMessage, ApiUpdateConnectionStateType, OnApiUpdate } from '../types';
+import type {
+  ApiMessage, ApiMessageExtendedMediaPreview, ApiUpdateConnectionStateType, OnApiUpdate,
+} from '../types';
 
-import { pick } from '../../util/iteratees';
+import { DEBUG, GENERAL_TOPIC_ID } from '../../config';
+import { omit, pick } from '../../util/iteratees';
+import { getServerTimeOffset, setServerTimeOffset } from '../../util/serverTime';
 import {
   buildApiMessage,
   buildApiMessageFromShort,
   buildApiMessageFromShortChat,
   buildMessageMediaContent,
-  buildMessageTextContent,
   buildPoll,
   buildPollResults,
   buildApiMessageFromNotification,
   buildMessageDraft,
   buildMessageReactions,
+  buildApiMessageExtendedMediaPreview,
 } from './apiBuilders/messages';
 import {
   buildChatMember,
@@ -24,7 +28,11 @@ import {
   buildApiChatFolder,
   buildApiChatSettings,
 } from './apiBuilders/chats';
-import { buildApiUser, buildApiUserEmojiStatus, buildApiUserStatus } from './apiBuilders/users';
+import {
+  buildApiUser,
+  buildApiUserEmojiStatus,
+  buildApiUserStatus,
+} from './apiBuilders/users';
 import {
   buildMessageFromUpdate,
   isMessageWithMedia,
@@ -32,7 +40,6 @@ import {
 } from './gramjsBuilders';
 import localDb from './localDb';
 import { omitVirtualClassFields } from './apiBuilders/helpers';
-import { DEBUG } from '../../config';
 import {
   addMessageToLocalDb,
   addEntitiesWithPhotosToLocalDb,
@@ -40,9 +47,15 @@ import {
   resolveMessageApiChatId,
   serializeBytes,
   log,
+  swapLocalInvoiceMedia,
 } from './helpers';
-import { buildApiNotifyException, buildPrivacyKey, buildPrivacyRules } from './apiBuilders/misc';
-import { buildApiPhoto } from './apiBuilders/common';
+import {
+  buildApiNotifyException,
+  buildApiNotifyExceptionTopic,
+  buildPrivacyKey,
+  buildPrivacyRules,
+} from './apiBuilders/misc';
+import { buildApiPhoto, buildApiUsernames } from './apiBuilders/common';
 import {
   buildApiGroupCall,
   buildApiGroupCallParticipant,
@@ -66,10 +79,6 @@ export function init(_onUpdate: OnApiUpdate) {
 }
 
 const sentMessageIds = new Set();
-let serverTimeOffset = 0;
-// Workaround for a situation when an incorrect update comes with an undefined property `adminRights`
-let shouldIgnoreNextChannelUpdate = false;
-const IGNORE_NEXT_CHANNEL_UPDATE_TIMEOUT = 2000;
 
 function dispatchUserAndChatUpdates(entities: (GramJs.TypeUser | GramJs.TypeChat)[]) {
   entities
@@ -106,9 +115,14 @@ function dispatchUserAndChatUpdates(entities: (GramJs.TypeUser | GramJs.TypeChat
     });
 }
 
-export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
+export function updater(update: Update) {
   if (update instanceof connection.UpdateServerTimeOffset) {
-    serverTimeOffset = update.timeOffset;
+    setServerTimeOffset(update.timeOffset);
+
+    onUpdate({
+      '@type': 'updateServerTimeOffset',
+      serverTimeOffset: update.timeOffset,
+    });
   } else if (update instanceof connection.UpdateConnectionState) {
     let connectionState: ApiUpdateConnectionStateType;
 
@@ -141,6 +155,13 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
     let message: ApiMessage | undefined;
     let shouldForceReply: boolean | undefined;
 
+    // eslint-disable-next-line no-underscore-dangle
+    const entities = update._entities;
+    if (entities) {
+      addEntitiesWithPhotosToLocalDb(entities);
+      dispatchUserAndChatUpdates(entities);
+    }
+
     if (update instanceof GramJs.UpdateShortChatMessage) {
       message = buildApiMessageFromShortChat(update);
     } else if (update instanceof GramJs.UpdateShortMessage) {
@@ -156,7 +177,10 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
         return;
       }
 
-      if (update.message instanceof GramJs.Message && isMessageWithMedia(update.message)) {
+      if ((update.message instanceof GramJs.Message && isMessageWithMedia(update.message))
+      || (update.message instanceof GramJs.MessageService
+          && update.message.action instanceof GramJs.MessageActionSuggestProfilePhoto)
+      ) {
         addMessageToLocalDb(update.message);
       }
 
@@ -164,13 +188,6 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       shouldForceReply = 'replyMarkup' in update.message
         && update.message?.replyMarkup instanceof GramJs.ReplyKeyboardForceReply
         && (!update.message.replyMarkup.selective || message.isMentioned);
-    }
-
-    // eslint-disable-next-line no-underscore-dangle
-    const entities = update._entities;
-    if (entities) {
-      addEntitiesWithPhotosToLocalDb(entities);
-      dispatchUserAndChatUpdates(entities);
     }
 
     if (update instanceof GramJs.UpdateNewScheduledMessage) {
@@ -182,7 +199,8 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       });
     } else {
       onUpdate({
-        '@type': sentMessageIds.has(message.id) ? 'updateMessage' : 'newMessage',
+        // We don't have preview for 'via bot' messages, so `newMessage` update here is required
+        '@type': sentMessageIds.has(message.id) && !message.viaBotId ? 'updateMessage' : 'newMessage',
         id: message.id,
         chatId: message.chatId,
         message,
@@ -274,6 +292,23 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
             },
           });
         }
+      } else if (action instanceof GramJs.MessageActionTopicEdit) {
+        const { replyTo } = update.message;
+        const {
+          replyToMsgId, replyToTopId, forumTopic: isTopicReply,
+        } = replyTo || {};
+        const topicId = !isTopicReply ? GENERAL_TOPIC_ID : replyToTopId || replyToMsgId || GENERAL_TOPIC_ID;
+
+        onUpdate({
+          '@type': 'updateTopic',
+          chatId: getApiChatIdFromMtpPeer(update.message.peerId!),
+          topicId,
+        });
+      } else if (action instanceof GramJs.MessageActionTopicCreate) {
+        onUpdate({
+          '@type': 'updateTopics',
+          chatId: getApiChatIdFromMtpPeer(update.message.peerId!),
+        });
       }
     }
   } else if (
@@ -294,7 +329,8 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       addMessageToLocalDb(update.message);
     }
 
-    const message = buildApiMessage(update.message)!;
+    // Workaround for a weird server behavior when own message is marked as incoming
+    const message = omit(buildApiMessage(update.message)!, ['isOutgoing']);
 
     onUpdate({
       '@type': 'updateMessage',
@@ -308,6 +344,30 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       id: update.msgId,
       chatId: getApiChatIdFromMtpPeer(update.peer),
       reactions: buildMessageReactions(update.reactions),
+    });
+  } else if (update instanceof GramJs.UpdateMessageExtendedMedia) {
+    let media: ApiMessage['content'] | undefined;
+    if (update.extendedMedia instanceof GramJs.MessageExtendedMedia) {
+      media = buildMessageMediaContent(update.extendedMedia.media);
+    }
+
+    let preview: ApiMessageExtendedMediaPreview | undefined;
+    if (update.extendedMedia instanceof GramJs.MessageExtendedMediaPreview) {
+      preview = buildApiMessageExtendedMediaPreview(update.extendedMedia);
+    }
+
+    if (!media && !preview) return;
+
+    const chatId = getApiChatIdFromMtpPeer(update.peer);
+
+    swapLocalInvoiceMedia(chatId, update.msgId, update.extendedMedia);
+
+    onUpdate({
+      '@type': 'updateMessageExtendedMedia',
+      id: update.msgId,
+      chatId,
+      media,
+      preview,
     });
   } else if (update instanceof GramJs.UpdateDeleteMessages) {
     onUpdate({
@@ -368,7 +428,7 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
         },
       });
     } else {
-      const currentDate = Date.now() / 1000 + serverTimeOffset;
+      const currentDate = Date.now() / 1000 + getServerTimeOffset();
       const message = buildApiMessageFromNotification(update, currentDate);
 
       if (isMessageWithMedia(update)) {
@@ -380,70 +440,8 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
         message,
       });
     }
-  } else if ((
-    originRequest instanceof GramJs.messages.SendMessage
-    || originRequest instanceof GramJs.messages.SendMedia
-    || originRequest instanceof GramJs.messages.SendMultiMedia
-    || originRequest instanceof GramJs.messages.ForwardMessages
-  ) && (
-    update instanceof GramJs.UpdateMessageID || update instanceof GramJs.UpdateShortSentMessage
-  )) {
-    let randomId;
-    if ('randomId' in update) {
-      randomId = update.randomId;
-    } else if ('randomId' in originRequest) {
-      randomId = originRequest.randomId;
-    }
-
-    const localMessage = randomId && localDb.localMessages[String(randomId)];
-    if (!localMessage) {
-      throw new Error('Local message not found');
-    }
-
-    let newContent: ApiMessage['content'] | undefined;
-    if (update instanceof GramJs.UpdateShortSentMessage) {
-      if (localMessage.content.text && update.entities) {
-        newContent = {
-          text: buildMessageTextContent(localMessage.content.text.text, update.entities),
-        };
-      }
-      if (update.media) {
-        newContent = {
-          ...newContent,
-          ...buildMessageMediaContent(update.media),
-        };
-      }
-
-      const mtpMessage = buildMessageFromUpdate(update.id, localMessage.chatId, update);
-      if (isMessageWithMedia(mtpMessage)) {
-        addMessageToLocalDb(mtpMessage);
-      }
-    }
-
+  } else if (update instanceof GramJs.UpdateMessageID || update instanceof GramJs.UpdateShortSentMessage) {
     sentMessageIds.add(update.id);
-
-    // Edge case for "Send When Online"
-    const isAlreadySent = 'date' in update && update.date * 1000 < Date.now() + serverTimeOffset * 1000;
-
-    onUpdate({
-      '@type': localMessage.isScheduled && !isAlreadySent
-        ? 'updateScheduledMessageSendSucceeded'
-        : 'updateMessageSendSucceeded',
-      chatId: localMessage.chatId,
-      localId: localMessage.id,
-      message: {
-        ...localMessage,
-        ...(newContent && {
-          content: {
-            ...localMessage.content,
-            ...newContent,
-          },
-        }),
-        id: update.id,
-        sendingState: undefined,
-        ...('date' in update && { date: update.date }),
-      },
-    });
   } else if (update instanceof GramJs.UpdateReadMessagesContents) {
     onUpdate({
       '@type': 'updateCommonBoxMessages',
@@ -529,6 +527,23 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       id: buildApiPeerId(update.channelId, 'channel'),
       chat: {
         lastReadOutboxMessageId: update.maxId,
+      },
+    });
+  } else if (update instanceof GramJs.UpdateReadChannelDiscussionInbox) {
+    onUpdate({
+      '@type': 'updateThreadInfo',
+      chatId: buildApiPeerId(update.channelId, 'channel'),
+      threadId: update.topMsgId,
+      threadInfo: {
+        lastReadInboxMessageId: update.readMaxId,
+      },
+    });
+  } else if (update instanceof GramJs.UpdateReadChannelDiscussionOutbox) {
+    onUpdate({
+      '@type': 'updateChat',
+      id: buildApiPeerId(update.channelId, 'channel'),
+      chat: {
+        lastReadOutboxMessageId: update.readMaxId,
       },
     });
   } else if (
@@ -620,7 +635,17 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
   ) {
     onUpdate({
       '@type': 'updateNotifyExceptions',
-      ...buildApiNotifyException(update.notifySettings, update.peer.peer, serverTimeOffset),
+      ...buildApiNotifyException(update.notifySettings, update.peer.peer),
+    });
+  } else if (
+    update instanceof GramJs.UpdateNotifySettings
+    && update.peer instanceof GramJs.NotifyForumTopic
+  ) {
+    onUpdate({
+      '@type': 'updateTopicNotifyExceptions',
+      ...buildApiNotifyExceptionTopic(
+        update.notifySettings, update.peer.peer, update.peer.topMsgId,
+      ),
     });
   } else if (
     update instanceof GramJs.UpdateUserTyping
@@ -642,7 +667,7 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       onUpdate({
         '@type': 'updateChatTypingStatus',
         id,
-        typingStatus: buildChatTypingStatus(update, serverTimeOffset),
+        typingStatus: buildChatTypingStatus(update),
       });
     }
   } else if (update instanceof GramJs.UpdateChannelUserTyping) {
@@ -651,7 +676,8 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
     onUpdate({
       '@type': 'updateChatTypingStatus',
       id,
-      typingStatus: buildChatTypingStatus(update, serverTimeOffset),
+      threadId: update.topMsgId,
+      typingStatus: buildChatTypingStatus(update),
     });
   } else if (update instanceof GramJs.UpdateChannel) {
     // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -665,16 +691,6 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
     ));
 
     if (channel instanceof GramJs.Channel) {
-      if (shouldIgnoreNextChannelUpdate) {
-        shouldIgnoreNextChannelUpdate = false;
-        return;
-      }
-
-      if (originRequest instanceof GramJs.messages.ToggleNoForwards) {
-        shouldIgnoreNextChannelUpdate = true;
-        setTimeout(() => { shouldIgnoreNextChannelUpdate = false; }, IGNORE_NEXT_CHANNEL_UPDATE_TIMEOUT);
-      }
-
       const chat = buildApiChatFromPreview(channel);
       if (chat) {
         onUpdate({
@@ -738,6 +754,11 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       userId: buildApiPeerId(update.userId, 'user'),
       status: buildApiUserStatus(update.status),
     });
+  } else if (update instanceof GramJs.UpdateUser) {
+    onUpdate({
+      '@type': 'updateRequestUserUpdate',
+      id: buildApiPeerId(update.userId, 'user'),
+    });
   } else if (update instanceof GramJs.UpdateUserEmojiStatus) {
     const emojiStatus = buildApiUserEmojiStatus(update.emojiStatus);
     onUpdate({
@@ -748,28 +769,20 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
   } else if (update instanceof GramJs.UpdateUserName) {
     const apiUserId = buildApiPeerId(update.userId, 'user');
     const updatedUser = localDb.users[apiUserId];
+
     const user = updatedUser?.mutualContact && !updatedUser.self
-      ? pick(update, ['username'])
-      : pick(update, ['firstName', 'lastName', 'username']);
+      ? pick(update, [])
+      : pick(update, ['firstName', 'lastName']);
+
+    const usernames = buildApiUsernames(update);
 
     onUpdate({
       '@type': 'updateUser',
       id: apiUserId,
-      user,
-    });
-  } else if (update instanceof GramJs.UpdateUserPhoto) {
-    const { userId, photo } = update;
-    const apiUserId = buildApiPeerId(userId, 'user');
-    const avatarHash = buildAvatarHash(photo);
-
-    if (localDb.users[apiUserId]) {
-      localDb.users[apiUserId].photo = photo;
-    }
-
-    onUpdate({
-      '@type': 'updateUser',
-      id: apiUserId,
-      user: { avatarHash },
+      user: {
+        ...user,
+        usernames,
+      },
     });
   } else if (update instanceof GramJs.UpdateUserPhone) {
     const { userId, phone } = update;
@@ -842,7 +855,7 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       '@type': 'updateNotifySettings',
       peerType,
       isSilent: Boolean(silent
-        || (typeof muteUntil === 'number' && Date.now() + serverTimeOffset * 1000 < muteUntil * 1000)),
+        || (typeof muteUntil === 'number' && Date.now() + getServerTimeOffset() * 1000 < muteUntil * 1000)),
       shouldShowPreviews: Boolean(showPreviews),
     });
   } else if (update instanceof GramJs.UpdatePeerBlocked) {
@@ -866,6 +879,7 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
     onUpdate({
       '@type': 'draftMessage',
       chatId: getApiChatIdFromMtpPeer(update.peer),
+      threadId: update.topMsgId,
       ...buildMessageDraft(update.draft),
     });
   } else if (update instanceof GramJs.UpdateContactsReset) {
@@ -874,14 +888,24 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
     onUpdate({ '@type': 'updateFavoriteStickers' });
   } else if (update instanceof GramJs.UpdateRecentStickers) {
     onUpdate({ '@type': 'updateRecentStickers' });
+  } else if (update instanceof GramJs.UpdateMoveStickerSetToTop) {
+    if (!update.masks) {
+      onUpdate({
+        '@type': 'updateMoveStickerSetToTop',
+        isCustomEmoji: update.emojis,
+        id: update.stickerset.toString(),
+      });
+    }
   } else if (update instanceof GramJs.UpdateStickerSets) {
     onUpdate({ '@type': 'updateStickerSets' });
   } else if (update instanceof GramJs.UpdateStickerSetsOrder) {
-    onUpdate({
-      '@type': 'updateStickerSetsOrder',
-      order: update.order.map((n) => n.toString()),
-      isCustomEmoji: update.emojis,
-    });
+    if (!update.masks) {
+      onUpdate({
+        '@type': 'updateStickerSetsOrder',
+        order: update.order.map((n) => n.toString()),
+        isCustomEmoji: update.emojis,
+      });
+    }
   } else if (update instanceof GramJs.UpdateNewStickerSet) {
     if (update.stickerset instanceof GramJs.messages.StickerSet) {
       const stickerSet = buildStickerSet(update.stickerset.set);
@@ -894,6 +918,13 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
   } else if (update instanceof GramJs.UpdateSavedGifs) {
     onUpdate({ '@type': 'updateSavedGifs' });
   } else if (update instanceof GramJs.UpdateGroupCall) {
+    // eslint-disable-next-line no-underscore-dangle
+    const entities = update._entities;
+    if (entities) {
+      addEntitiesWithPhotosToLocalDb(entities);
+      dispatchUserAndChatUpdates(entities);
+    }
+
     onUpdate({
       '@type': 'updateGroupCall',
       call: buildApiGroupCall(update.call),
@@ -990,6 +1021,22 @@ export function updater(update: Update, originRequest?: GramJs.AnyRequest) {
       addEntitiesWithPhotosToLocalDb(entities);
       dispatchUserAndChatUpdates(entities);
     }
+    onUpdate({ '@type': 'updateConfig' });
+  } else if (update instanceof GramJs.UpdateChannelPinnedTopic) {
+    onUpdate({
+      '@type': 'updatePinnedTopic',
+      chatId: buildApiPeerId(update.channelId, 'channel'),
+      topicId: update.topicId,
+      isPinned: Boolean(update.pinned),
+    });
+  } else if (update instanceof GramJs.UpdateChannelPinnedTopics) {
+    onUpdate({
+      '@type': 'updatePinnedTopicsOrder',
+      chatId: buildApiPeerId(update.channelId, 'channel'),
+      order: update.order || [],
+    });
+  } else if (update instanceof GramJs.UpdateRecentEmojiStatuses) {
+    onUpdate({ '@type': 'updateRecentEmojiStatuses' });
   } else if (DEBUG) {
     const params = typeof update === 'object' && 'className' in update ? update.className : update;
     log('UNEXPECTED UPDATE', params);

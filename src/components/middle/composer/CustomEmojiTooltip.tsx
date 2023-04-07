@@ -5,9 +5,9 @@ import { getActions, withGlobal } from '../../../global';
 
 import type { FC } from '../../../lib/teact/teact';
 import type { ApiSticker } from '../../../api/types';
-import type { GlobalActions } from '../../../global/types';
+import type { GlobalActions } from '../../../global';
 
-import { EMOJI_SIZE_PICKER } from '../../../config';
+import { COMPOSER_EMOJI_SIZE_PICKER } from '../../../config';
 import { selectIsChatWithSelf, selectIsCurrentUserPremium } from '../../../global/selectors';
 import buildClassName from '../../../util/buildClassName';
 import captureEscKeyListener from '../../../util/captureEscKeyListener';
@@ -25,8 +25,9 @@ import styles from './CustomEmojiTooltip.module.scss';
 export type OwnProps = {
   chatId: string;
   isOpen: boolean;
-  onCustomEmojiSelect: (customEmoji: ApiSticker) => void;
   addRecentCustomEmoji: GlobalActions['addRecentCustomEmoji'];
+  onCustomEmojiSelect: (customEmoji: ApiSticker) => void;
+  onClose: NoneToVoidFunction;
 };
 
 type StateProps = {
@@ -39,11 +40,12 @@ const INTERSECTION_THROTTLE = 200;
 
 const CustomEmojiTooltip: FC<OwnProps & StateProps> = ({
   isOpen,
+  addRecentCustomEmoji,
+  onCustomEmojiSelect,
+  onClose,
   customEmoji,
   isSavedMessages,
   isCurrentUserPremium,
-  onCustomEmojiSelect,
-  addRecentCustomEmoji,
 }) => {
   const { clearCustomEmojiForEmoji } = getActions();
 
@@ -53,15 +55,13 @@ const CustomEmojiTooltip: FC<OwnProps & StateProps> = ({
   const prevStickers = usePrevious(customEmoji, true);
   const displayedStickers = customEmoji || prevStickers;
 
-  useHorizontalScroll(containerRef.current);
+  useHorizontalScroll(containerRef);
 
   const {
     observe: observeIntersection,
-  } = useIntersectionObserver({ rootRef: containerRef, throttleMs: INTERSECTION_THROTTLE });
+  } = useIntersectionObserver({ rootRef: containerRef, throttleMs: INTERSECTION_THROTTLE, isDisabled: !isOpen });
 
-  useEffect(() => (
-    isOpen ? captureEscKeyListener(clearCustomEmojiForEmoji) : undefined
-  ), [isOpen, clearCustomEmojiForEmoji]);
+  useEffect(() => (isOpen ? captureEscKeyListener(onClose) : undefined), [isOpen, onClose]);
 
   const handleCustomEmojiSelect = useCallback((ce: ApiSticker) => {
     if (!isOpen) return;
@@ -90,7 +90,7 @@ const CustomEmojiTooltip: FC<OwnProps & StateProps> = ({
             key={sticker.id}
             sticker={sticker}
             className={styles.emojiButton}
-            size={EMOJI_SIZE_PICKER}
+            size={COMPOSER_EMOJI_SIZE_PICKER}
             observeIntersection={observeIntersection}
             onClick={handleCustomEmojiSelect}
             clickArg={sticker}
@@ -111,6 +111,7 @@ export default memo(withGlobal<OwnProps>(
     const { stickers: customEmoji } = global.customEmojis.forEmoji;
     const isSavedMessages = selectIsChatWithSelf(global, chatId);
     const isCurrentUserPremium = selectIsCurrentUserPremium(global);
+
     return { customEmoji, isSavedMessages, isCurrentUserPremium };
   },
 )(CustomEmojiTooltip));

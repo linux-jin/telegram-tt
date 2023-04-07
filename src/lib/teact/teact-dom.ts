@@ -23,9 +23,15 @@ import { DEBUG } from '../../config';
 import { addEventListener, removeAllDelegatedListeners, removeEventListener } from './dom-events';
 import { unique } from '../../util/iteratees';
 
-type VirtualDomHead = {
+interface VirtualDomHead {
   children: [VirtualElement] | [];
-};
+}
+
+interface SelectionState {
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  isCaretAtEnd: boolean;
+}
 
 const FILTERED_ATTRIBUTES = new Set(['key', 'ref', 'teactFastList', 'teactOrderKey']);
 const HTML_ATTRIBUTES = new Set(['dir', 'role', 'form']);
@@ -108,7 +114,7 @@ function renderWithVirtual<T extends VirtualElement | undefined>(
   if (!$current && $new) {
     if (isNewComponent || isNewFragment) {
       if (isNewComponent) {
-        $new = initComponent(parentEl, $new as VirtualElementComponent, $parent, index) as typeof $new;
+        $new = initComponent(parentEl, $new as VirtualElementComponent, $parent, index) as unknown as typeof $new;
       }
 
       mountChildren(parentEl, $new as VirtualElementComponent | VirtualElementFragment, { nextSibling, fragment });
@@ -127,7 +133,7 @@ function renderWithVirtual<T extends VirtualElement | undefined>(
 
       if (isNewComponent || isNewFragment) {
         if (isNewComponent) {
-          $new = initComponent(parentEl, $new as VirtualElementComponent, $parent, index) as typeof $new;
+          $new = initComponent(parentEl, $new as VirtualElementComponent, $parent, index) as unknown as typeof $new;
         }
 
         remount(parentEl, $current, undefined);
@@ -262,6 +268,8 @@ function createNode($element: VirtualElementReal): Node {
 
   if (typeof props.ref === 'object') {
     props.ref.current = element;
+  } else if (typeof props.ref === 'function') {
+    props.ref(element);
   }
 
   processControlled(tag, props);
@@ -556,8 +564,19 @@ function processControlled(tag: string, props: AnyLiteral) {
     onInput?.(e);
     onChange?.(e);
 
-    if (value !== undefined) {
+    if (value !== undefined && value !== e.currentTarget.value) {
+      const { selectionStart, selectionEnd } = e.currentTarget;
+      const isCaretAtEnd = selectionStart === selectionEnd && selectionEnd === e.currentTarget.value.length;
+
       e.currentTarget.value = value;
+
+      if (typeof selectionStart === 'number' && typeof selectionEnd === 'number') {
+        e.currentTarget.setSelectionRange(selectionStart, selectionEnd);
+
+        const selectionState: SelectionState = { selectionStart, selectionEnd, isCaretAtEnd };
+        // eslint-disable-next-line no-underscore-dangle
+        e.currentTarget.dataset.__teactSelectionState = JSON.stringify(selectionState);
+      }
     }
 
     if (checked !== undefined) {
@@ -615,8 +634,23 @@ function setAttribute(element: HTMLElement, key: string, value: any) {
     element.className = value;
     // An optimization attempt
   } else if (key === 'value') {
-    if ((element as HTMLInputElement).value !== value) {
-      (element as HTMLInputElement).value = value;
+    const inputEl = element as HTMLInputElement;
+
+    if (inputEl.value !== value) {
+      inputEl.value = value;
+
+      // eslint-disable-next-line no-underscore-dangle
+      const selectionStateJson = inputEl.dataset.__teactSelectionState;
+      if (selectionStateJson) {
+        const { selectionStart, selectionEnd, isCaretAtEnd } = JSON.parse(selectionStateJson) as SelectionState;
+
+        if (isCaretAtEnd) {
+          const length = inputEl.value.length;
+          inputEl.setSelectionRange(length, length);
+        } else if (typeof selectionStart === 'number' && typeof selectionEnd === 'number') {
+          inputEl.setSelectionRange(selectionStart, selectionEnd);
+        }
+      }
     }
   } else if (key === 'style') {
     element.style.cssText = value;
@@ -643,10 +677,8 @@ function removeAttribute(element: HTMLElement, key: string, value: any) {
     element.innerHTML = '';
   } else if (key.startsWith('on')) {
     removeEventListener(element, key, value, key.endsWith('Capture'));
-  } else if (key.startsWith('data-') || key.startsWith('aria-') || HTML_ATTRIBUTES.has(key)) {
-    element.removeAttribute(key);
   } else if (!FILTERED_ATTRIBUTES.has(key)) {
-    delete (element as any)[MAPPED_ATTRIBUTES[key] || key];
+    element.removeAttribute(key);
   }
 }
 
@@ -674,6 +706,8 @@ function DEBUG_checkKeyUniqueness(children: VirtualElementChildren) {
     }, []);
 
     if (keys.length !== unique(keys).length) {
+      // eslint-disable-next-line no-console
+      console.warn('[Teact] Duplicated keys:', keys.filter((e, i, a) => a.indexOf(e) !== i));
       throw new Error('[Teact] Children keys are not unique');
     }
   }

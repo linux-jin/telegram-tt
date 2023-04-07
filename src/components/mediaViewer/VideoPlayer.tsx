@@ -6,16 +6,16 @@ import { getActions } from '../../global';
 
 import type { ApiDimensions } from '../../api/types';
 
+import { IS_IOS, IS_TOUCH_ENV, IS_YA_BROWSER } from '../../util/windowEnvironment';
+import safePlay from '../../util/safePlay';
+import stopEvent from '../../util/stopEvent';
+import { clamp } from '../../util/math';
 import useBuffering from '../../hooks/useBuffering';
 import useFullscreen from '../../hooks/useFullscreen';
 import usePictureInPicture from '../../hooks/usePictureInPicture';
 import useShowTransition from '../../hooks/useShowTransition';
 import useVideoCleanup from '../../hooks/useVideoCleanup';
-import {
-  IS_IOS, IS_SINGLE_COLUMN_LAYOUT, IS_TOUCH_ENV, IS_YA_BROWSER,
-} from '../../util/environment';
-import safePlay from '../../util/safePlay';
-import stopEvent from '../../util/stopEvent';
+import useAppLayout from '../../hooks/useAppLayout';
 
 import Button from '../ui/Button';
 import ProgressSpinner from '../ui/ProgressSpinner';
@@ -39,13 +39,14 @@ type OwnProps = {
   isProtected?: boolean;
   areControlsVisible: boolean;
   shouldCloseOnClick?: boolean;
+  isForceMobileVersion?: boolean;
   toggleControls: (isVisible: boolean) => void;
   onClose: (e: React.MouseEvent<HTMLElement, MouseEvent>) => void;
   isClickDisabled?: boolean;
 };
 
-const MOBILE_VERSION_CONTROL_WIDTH = 400;
 const MAX_LOOP_DURATION = 30; // Seconds
+const REWIND_STEP = 5; // Seconds
 
 const VideoPlayer: FC<OwnProps> = ({
   url,
@@ -60,6 +61,7 @@ const VideoPlayer: FC<OwnProps> = ({
   isMuted,
   playbackRate,
   onClose,
+  isForceMobileVersion,
   toggleControls,
   areControlsVisible,
   shouldCloseOnClick,
@@ -77,21 +79,23 @@ const VideoPlayer: FC<OwnProps> = ({
   const [isPlaying, setIsPlaying] = useState(!IS_TOUCH_ENV || !IS_IOS);
   const [currentTime, setCurrentTime] = useState(0);
   const [isFullscreen, setFullscreen, exitFullscreen] = useFullscreen(videoRef, setIsPlaying);
+  const { isMobile } = useAppLayout();
 
   const handleEnterFullscreen = useCallback(() => {
     // Yandex browser doesn't support PIP when video is hidden
     if (IS_YA_BROWSER) return;
-    setMediaViewerHidden(true);
+    setMediaViewerHidden({ isHidden: true });
   }, [setMediaViewerHidden]);
 
   const handleLeaveFullscreen = useCallback(() => {
     if (IS_YA_BROWSER) return;
-    setMediaViewerHidden(false);
+    setMediaViewerHidden({ isHidden: false });
   }, [setMediaViewerHidden]);
 
   const [
     isPictureInPictureSupported,
     enterPictureInPicture,
+    isInPictureInPicture,
   ] = usePictureInPicture(videoRef, handleEnterFullscreen, handleLeaveFullscreen);
 
   const handleVideoMove = useCallback(() => {
@@ -158,7 +162,10 @@ const VideoPlayer: FC<OwnProps> = ({
   }, [isPlaying]);
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLVideoElement, MouseEvent>) => {
-    if (isClickDisabled) return;
+    if (isClickDisabled) {
+      return;
+    }
+
     if (shouldCloseOnClick) {
       onClose(e);
     } else {
@@ -206,29 +213,49 @@ const VideoPlayer: FC<OwnProps> = ({
 
   useEffect(() => {
     if (!isMediaViewerOpen) return undefined;
-    const togglePayingStateBySpace = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        togglePlayState(e);
+    const rewind = (dir: number) => {
+      const video = videoRef.current!;
+      video.currentTime = clamp(video.currentTime + dir * REWIND_STEP, 0, video.duration);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isInPictureInPicture) return;
+      switch (e.key) {
+        case ' ':
+        case 'Enter':
+          e.preventDefault();
+          togglePlayState(e);
+          break;
+        case 'Left': // IE/Edge specific value
+        case 'ArrowLeft':
+          e.preventDefault();
+          rewind(-1);
+          break;
+        case 'Right': // IE/Edge specific value
+        case 'ArrowRight':
+          e.preventDefault();
+          rewind(1);
+          break;
       }
     };
 
-    document.addEventListener('keydown', togglePayingStateBySpace, false);
+    document.addEventListener('keydown', handleKeyDown, false);
 
     return () => {
-      document.removeEventListener('keydown', togglePayingStateBySpace, false);
+      document.removeEventListener('keydown', handleKeyDown, false);
     };
-  }, [togglePlayState, isMediaViewerOpen]);
+  }, [togglePlayState, isMediaViewerOpen, isInPictureInPicture]);
 
   const wrapperStyle = posterSize && `width: ${posterSize.width}px; height: ${posterSize.height}px`;
   const videoStyle = `background-image: url(${posterData})`;
+  const shouldToggleControls = !IS_TOUCH_ENV && !isForceMobileVersion;
   const duration = videoRef.current?.duration || 0;
 
   return (
+    // eslint-disable-next-line jsx-a11y/mouse-events-have-key-events
     <div
       className="VideoPlayer"
-      onMouseMove={!IS_TOUCH_ENV ? handleVideoMove : undefined}
-      onMouseOut={!IS_TOUCH_ENV ? handleVideoLeave : undefined}
+      onMouseMove={shouldToggleControls ? handleVideoMove : undefined}
+      onMouseOut={shouldToggleControls ? handleVideoLeave : undefined}
     >
       <div
         style={wrapperStyle}
@@ -238,14 +265,14 @@ const VideoPlayer: FC<OwnProps> = ({
           <div
             onContextMenu={stopEvent}
             onDoubleClick={!IS_TOUCH_ENV ? handleFullscreenChange : undefined}
-            onClick={!IS_SINGLE_COLUMN_LAYOUT ? togglePlayState : undefined}
+            onClick={!isMobile ? togglePlayState : undefined}
             className="protector"
           />
         )}
         <video
           ref={videoRef}
           autoPlay={IS_TOUCH_ENV}
-          controlsList={isProtected ? 'nodownload' : undefined}
+          controlsList="nodownload"
           playsInline
           loop={isGif || duration <= MAX_LOOP_DURATION}
           // This is to force autoplaying on mobiles
@@ -254,7 +281,7 @@ const VideoPlayer: FC<OwnProps> = ({
           style={videoStyle}
           onPlay={() => setIsPlaying(true)}
           onEnded={handleEnded}
-          onClick={!IS_SINGLE_COLUMN_LAYOUT ? handleClick : undefined}
+          onClick={!isMobile && !isFullscreen ? handleClick : undefined}
           onDoubleClick={!IS_TOUCH_ENV ? handleFullscreenChange : undefined}
           // eslint-disable-next-line react/jsx-props-no-spreading
           {...bufferingHandlers}
@@ -297,7 +324,7 @@ const VideoPlayer: FC<OwnProps> = ({
           duration={duration}
           isVisible={areControlsVisible}
           setVisibility={toggleControls}
-          isForceMobileVersion={posterSize && posterSize.width < MOBILE_VERSION_CONTROL_WIDTH}
+          isForceMobileVersion={isForceMobileVersion}
           onSeek={handleSeek}
           onChangeFullscreen={handleFullscreenChange}
           onPictureInPictureChange={enterPictureInPicture}

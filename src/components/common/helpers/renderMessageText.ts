@@ -1,7 +1,6 @@
 import type { ApiMessage } from '../../../api/types';
 import { ApiMessageEntityTypes } from '../../../api/types';
 import type { TextPart } from '../../../types';
-import type { ObserveFn } from '../../../hooks/useIntersectionObserver';
 import type { LangFn } from '../../../hooks/useLang';
 
 import {
@@ -22,7 +21,7 @@ export function renderMessageText(
   isSimple?: boolean,
   truncateLength?: number,
   isProtected?: boolean,
-  observeIntersection?: ObserveFn,
+  shouldRenderAsHtml?: boolean,
 ) {
   const { text, entities } = message.content.text || {};
 
@@ -36,21 +35,20 @@ export function renderMessageText(
     entities,
     highlight,
     emojiSize,
-    undefined,
+    shouldRenderAsHtml,
     message.id,
     isSimple,
     isProtected,
-    observeIntersection,
   );
 }
 
+// TODO Use Message Summary component instead
 export function renderMessageSummary(
   lang: LangFn,
   message: ApiMessage,
   noEmoji = false,
   highlight?: string,
   truncateLength = TRUNCATED_SUMMARY_LENGTH,
-  observeIntersection?: ObserveFn,
 ): TextPart[] {
   const { entities } = message.content.text || {};
 
@@ -69,9 +67,7 @@ export function renderMessageSummary(
   const emoji = !noEmoji && getMessageSummaryEmoji(message);
   const emojiWithSpace = emoji ? `${emoji} ` : '';
 
-  const text = renderMessageText(
-    message, highlight, undefined, true, truncateLength, undefined, observeIntersection,
-  );
+  const text = renderMessageText(message, highlight, undefined, true, truncateLength);
   const description = getMessageSummaryDescription(lang, message, text);
 
   return [

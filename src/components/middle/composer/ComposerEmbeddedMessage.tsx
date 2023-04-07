@@ -5,7 +5,6 @@ import { getActions, withGlobal } from '../../../global';
 
 import type { FC } from '../../../lib/teact/teact';
 import type { ApiChat, ApiMessage, ApiUser } from '../../../api/types';
-import { ApiMessageEntityTypes } from '../../../api/types';
 
 import {
   selectChat,
@@ -20,10 +19,11 @@ import {
   selectEditingMessage,
   selectIsChatWithSelf,
   selectIsCurrentUserPremium,
+  selectTabState,
 } from '../../../global/selectors';
 import captureEscKeyListener from '../../../util/captureEscKeyListener';
 import buildClassName from '../../../util/buildClassName';
-import { isUserId } from '../../../global/helpers';
+import { isUserId, stripCustomEmoji } from '../../../global/helpers';
 
 import useAsyncRendering from '../../right/hooks/useAsyncRendering';
 import useShowTransition from '../../../hooks/useShowTransition';
@@ -54,6 +54,7 @@ type StateProps = {
 
 type OwnProps = {
   onClear?: () => void;
+  shouldForceShowEditing?: boolean;
 };
 
 const FORWARD_RENDERING_DELAY = 300;
@@ -68,6 +69,7 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
   noAuthors,
   noCaptions,
   forwardsHaveCaptions,
+  shouldForceShowEditing,
   isCurrentUserPremium,
   onClear,
 }) => {
@@ -99,7 +101,7 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
   } = useShowTransition(canAnimate && isShown, undefined, !shouldAnimate, undefined, !shouldAnimate);
 
   const clearEmbedded = useCallback(() => {
-    if (replyingToId) {
+    if (replyingToId && !shouldForceShowEditing) {
       setReplyingToId({ messageId: undefined });
     } else if (editingId) {
       setEditingId({ messageId: undefined });
@@ -107,13 +109,16 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
       exitForwardMode();
     }
     onClear?.();
-  }, [replyingToId, editingId, forwardedMessagesCount, onClear, setReplyingToId, setEditingId, exitForwardMode]);
+  }, [
+    replyingToId, shouldForceShowEditing, editingId, forwardedMessagesCount, onClear, setReplyingToId, setEditingId,
+    exitForwardMode,
+  ]);
 
   useEffect(() => (isShown ? captureEscKeyListener(clearEmbedded) : undefined), [isShown, clearEmbedded]);
 
   const handleMessageClick = useCallback((): void => {
     if (isForwarding) return;
-    focusMessage({ chatId: message!.chatId, messageId: message!.id });
+    focusMessage({ chatId: message!.chatId, messageId: message!.id, noForumTopicPanel: true });
   }, [focusMessage, isForwarding, message]);
 
   const handleClearClick = useCallback((e: React.MouseEvent<HTMLButtonElement, MouseEvent>): void => {
@@ -146,7 +151,7 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
   const className = buildClassName('ComposerEmbeddedMessage', transitionClassNames);
 
   const leftIcon = useMemo(() => {
-    if (replyingToId) {
+    if (replyingToId && !shouldForceShowEditing) {
       return 'icon-reply';
     }
     if (editingId) {
@@ -157,25 +162,21 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
     }
 
     return undefined;
-  }, [editingId, isForwarding, replyingToId]);
+  }, [editingId, isForwarding, replyingToId, shouldForceShowEditing]);
 
   const customText = forwardedMessagesCount && forwardedMessagesCount > 1
     ? lang('ForwardedMessageCount', forwardedMessagesCount)
     : undefined;
 
   const strippedMessage = useMemo(() => {
-    const textEntities = message?.content.text?.entities;
-    if (!message || !isForwarding || !textEntities?.length || !noAuthors || isCurrentUserPremium) return message;
+    if (!message || !isForwarding || !message.content.text || !noAuthors || isCurrentUserPremium) return message;
 
-    const filteredEntities = textEntities.filter((entity) => entity.type !== ApiMessageEntityTypes.CustomEmoji);
+    const strippedText = stripCustomEmoji(message.content.text);
     return {
       ...message,
       content: {
         ...message.content,
-        text: {
-          text: message.content.text!.text,
-          entities: filteredEntities,
-        },
+        text: strippedText,
       },
     };
   }, [isCurrentUserPremium, isForwarding, message, noAuthors]);
@@ -225,7 +226,9 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
               icon={!noAuthors ? 'message-succeeded' : undefined}
               customIcon={noAuthors ? <i className="icon-placeholder" /> : undefined}
               // eslint-disable-next-line react/jsx-no-bind
-              onClick={() => setForwardNoAuthors(false)}
+              onClick={() => setForwardNoAuthors({
+                noAuthors: false,
+              })}
             >
               {lang(forwardedMessagesCount > 1 ? 'ShowSenderNames' : 'ShowSendersName')}
             </MenuItem>
@@ -233,7 +236,9 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
               icon={noAuthors ? 'message-succeeded' : undefined}
               customIcon={!noAuthors ? <i className="icon-placeholder" /> : undefined}
               // eslint-disable-next-line react/jsx-no-bind
-              onClick={() => setForwardNoAuthors(true)}
+              onClick={() => setForwardNoAuthors({
+                noAuthors: true,
+              })}
             >
               {lang(forwardedMessagesCount > 1 ? 'HideSenderNames' : 'HideSendersName')}
             </MenuItem>
@@ -244,7 +249,9 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
                   icon={!noCaptions ? 'message-succeeded' : undefined}
                   customIcon={noCaptions ? <i className="icon-placeholder" /> : undefined}
                   // eslint-disable-next-line react/jsx-no-bind
-                  onClick={() => setForwardNoCaptions(false)}
+                  onClick={() => setForwardNoCaptions({
+                    noCaptions: false,
+                  })}
                 >
                   {lang(forwardedMessagesCount > 1 ? 'Conversation.ForwardOptions.ShowCaption' : 'ShowCaption')}
                 </MenuItem>
@@ -252,7 +259,9 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
                   icon={noCaptions ? 'message-succeeded' : undefined}
                   customIcon={!noCaptions ? <i className="icon-placeholder" /> : undefined}
                   // eslint-disable-next-line react/jsx-no-bind
-                  onClick={() => setForwardNoCaptions(true)}
+                  onClick={() => setForwardNoCaptions({
+                    noCaptions: true,
+                  })}
                 >
                   {lang(forwardedMessagesCount > 1 ? 'Conversation.ForwardOptions.HideCaption' : 'HideCaption')}
                 </MenuItem>
@@ -270,7 +279,7 @@ const ComposerEmbeddedMessage: FC<OwnProps & StateProps> = ({
 };
 
 export default memo(withGlobal<OwnProps>(
-  (global): StateProps => {
+  (global, { shouldForceShowEditing }): StateProps => {
     const { chatId, threadId, type: messageListType } = selectCurrentMessageList(global) || {};
     if (!chatId || !threadId || !messageListType) {
       return {};
@@ -280,7 +289,7 @@ export default memo(withGlobal<OwnProps>(
       forwardMessages: {
         fromChatId, toChatId, messageIds: forwardMessageIds, noAuthors, noCaptions,
       },
-    } = global;
+    } = selectTabState(global);
 
     const replyingToId = selectReplyingToId(global, chatId, threadId);
     const editingId = messageListType === 'scheduled'
@@ -291,7 +300,7 @@ export default memo(withGlobal<OwnProps>(
     const forwardedMessages = forwardMessageIds?.map((id) => selectChatMessage(global, fromChatId!, id)!);
 
     let message: ApiMessage | undefined;
-    if (replyingToId) {
+    if (replyingToId && !shouldForceShowEditing) {
       message = selectChatMessage(global, chatId, replyingToId);
     } else if (editingId) {
       message = selectEditingMessage(global, chatId, threadId, messageListType);
@@ -300,7 +309,7 @@ export default memo(withGlobal<OwnProps>(
     }
 
     let sender: ApiChat | ApiUser | undefined;
-    if (replyingToId && message) {
+    if (replyingToId && message && !shouldForceShowEditing) {
       const { forwardInfo } = message;
       const isChatWithSelf = selectIsChatWithSelf(global, chatId);
       if (forwardInfo && (forwardInfo.isChannelPost || isChatWithSelf)) {
